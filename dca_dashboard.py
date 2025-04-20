@@ -358,6 +358,8 @@ def main():
         
         # Combine all stock histories for visualization
         all_stock_data = {}
+        dca_results = {}
+        portfolio_values = {}
         earliest_date = pd.Timestamp.now(tz='America/New_York')
         
         for stock in st.session_state.stocks:
@@ -377,24 +379,59 @@ def main():
                 st.warning(f"Couldn't fetch historical data for {symbol}: {str(e)}")
         
         if all_stock_data:
-            # Create subplots for different visualizations
+            # Process each stock and calculate DCA results first
+            for idx, stock in enumerate(st.session_state.stocks):
+                symbol = stock['symbol']
+                
+                # Get stock data
+                results = get_stock_history(
+                    symbol,
+                    stock['start_date'],
+                    stock['amount'],
+                    stock['frequency']
+                )
+                
+                if results is None:
+                    continue
+                
+                all_stock_data[symbol] = results
+                
+                # Calculate DCA results
+                dca_result = calculate_dca_investment(
+                    symbol,
+                    stock['start_date'],
+                    frequency_map[stock['frequency']],
+                    stock['amount']
+                )
+                dca_results[symbol] = dca_result
+            
+            # Create subplots
             fig = make_subplots(
                 rows=2, cols=2,
+                specs=[[{'type': 'scatter'}, {'type': 'pie'}],
+                       [{'type': 'scatter', 'colspan': 2}, None]],
                 subplot_titles=(
-                    "Stock Prices (Normalized)", "Portfolio Allocation",
-                    "Investment Value Over Time", ""
+                    "Normalized Stock Prices",
+                    "Portfolio Allocation",
+                    "Investment Values"
                 ),
                 vertical_spacing=0.15,
                 horizontal_spacing=0.1,
-                specs=[
-                    [{'type': 'scatter'}, {'type': 'pie'}],
-                    [{'type': 'scatter', 'colspan': 2}, None]
-                ],
-                row_heights=[0.4, 0.6])
+                row_heights=[0.4, 0.6]
+            )
             
-            # Plot 1: Normalized stock prices
-            for symbol, hist in all_stock_data.items():
+            # Add traces for each stock
+            for idx, stock in enumerate(st.session_state.stocks):
+                symbol = stock['symbol']
+                hist = all_stock_data.get(symbol)
+                
+                if hist is None:
+                    continue
+                
+                # Calculate normalized price (percentage change from start)
                 normalized_price = hist['Close'] / hist['Close'].iloc[0] * 100
+                
+                # Add normalized price line
                 fig.add_trace(
                     go.Scatter(x=hist.index, y=normalized_price,
                               name=f"{symbol} (Normalized)",
@@ -405,13 +442,18 @@ def main():
             # Plot 2: Investment value over time
             for symbol, hist in all_stock_data.items():
                 stock_info = next(s for s in st.session_state.stocks if s['symbol'] == symbol)
-                results = calculate_dca_investment(
-                    symbol,
-                    stock_info['start_date'],
-                    frequency_map[stock_info['frequency']],
-                    stock_info['amount']
-                )
                 
+                # Calculate DCA results if not already calculated
+                if symbol not in dca_results:
+                    dca_results[symbol] = calculate_dca_investment(
+                        symbol,
+                        stock_info['start_date'],
+                        frequency_map[stock_info['frequency']],
+                        stock_info['amount']
+                    )
+                    portfolio_values[symbol] = dca_results[symbol]['current_value']
+                
+                results = dca_results[symbol]
                 df = results['history'].copy()
                 
                 # Set Date as index if it's not already
@@ -476,6 +518,7 @@ def main():
                 # Add lump sum comparison if requested
                 if show_lump_sum and comparison_key in st.session_state.comparison_results:
                     lump_sum_results = st.session_state.comparison_results[comparison_key]
+                    stock_dca_results = dca_results[symbol]
                     
                     # Add lump sum line
                     lump_sum_df = lump_sum_results['history']
@@ -499,8 +542,8 @@ def main():
                     with comp_col1:
                         st.metric(
                             f"{symbol} DCA Value",
-                            f"${results['current_value']:,.2f}",
-                            f"{results['gain_loss_percentage']:,.2f}%"
+                            f"${stock_dca_results['current_value']:,.2f}",
+                            f"{stock_dca_results['gain_loss_percentage']:,.2f}%"
                         )
                     with comp_col2:
                         st.metric(
@@ -509,27 +552,13 @@ def main():
                             f"{lump_sum_results['gain_loss_percentage']:,.2f}%"
                         )
                     with comp_col3:
-                        value_diff = results['current_value'] - lump_sum_results['current_value']
+                        value_diff = stock_dca_results['current_value'] - lump_sum_results['current_value']
                         diff_pct = (value_diff / lump_sum_results['current_value'] * 100)
                         better_strategy = "DCA" if value_diff > 0 else "Lump Sum"
-                        st.metric(
-                            f"Difference ({better_strategy} Wins)",
-                            f"${abs(value_diff):,.2f}",
-                            f"{diff_pct:,.2f}%"
-                        )
-            
-            # Collect final values for pie chart
             portfolio_values = {}
-            for symbol, hist in all_stock_data.items():
-                stock_info = next(s for s in st.session_state.stocks if s['symbol'] == symbol)
-                results = calculate_dca_investment(
-                    symbol,
-                    stock_info['start_date'],
-                    frequency_map[stock_info['frequency']],
-                    stock_info['amount']
-                )
-                portfolio_values[symbol] = results['current_value']
-            
+            for symbol in all_stock_data:
+                portfolio_values[symbol] = dca_results[symbol]['current_value']
+
             # Add pie chart
             fig.add_trace(
                 go.Pie(
